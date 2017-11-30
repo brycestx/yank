@@ -58,6 +58,7 @@ import collections
 
 import numpy as np
 import mdtraj as md
+import mdtraj.formats as mdf
 import netCDF4 as netcdf
 
 import openmmtools as mmtools
@@ -85,7 +86,10 @@ class Reporter(object):
         The path to the storage file for analysis.
 
         A second checkpoint file will be determined from either ``checkpoint_storage`` or automatically based on
-        the storage option
+        the storage option. Trajectory/coordinate information stored relative to the storage file will be called the
+        same name as this parameter (less the extension) and appended with the following where ``X`` is replica numbers:
+
+        * solute-only trajectory: ".sol.X.xtc"
 
         In the future this will be able to take Storage classes as well.
     open_mode : str or None
@@ -109,6 +113,11 @@ class Reporter(object):
         This should NOT be a full path, and instead just a filename
 
         If None: the derived checkpoint name is the same as storage, less any extension, then "_checkpoint.nc" is added.
+
+        Trajectory/coordinate information stored relative to the storage file will be called the
+        same name as this parameter (less the extension) and appended with the following where ``X`` is replica numbers:
+
+        * trajectory: ".traj.X.xtc"
 
         The reporter internally tracks what data goes into which file, so its transparent to all other classes
         In the future, this will be able to take Storage classes as well
@@ -135,10 +144,22 @@ class Reporter(object):
             logger.debug("Initial checkpoint file automatically chosen as {}".format(checkpoint_storage))
         else:
             checkpoint_storage = os.path.join(dirname, checkpoint_storage)
+        # File path data (strings)
         self._storage_file_analysis = storage
         self._storage_file_checkpoint = checkpoint_storage
+        # Actual file objects
         self._storage_checkpoint = None
         self._storage_analysis = None
+        # Trajectory file objects
+        self._storage_solute_only_traj = None
+        self._storage_full_traj = None
+        # Trajectory file information
+        # Checkpoint
+        cp_basename, _ = os.path.splitext(self._storage_file_checkpoint)
+        self._trajectory_solute_filenames = os.path.join(cp_basename, ".sol.{}.xtc")
+        # Full Trajectory
+        tr_basename, _ = os.path.splitext(self._storage_file_checkpoint)
+        self._trajectory_full_filenames = os.path.join(tr_basename, ".traj.{}.xtc")
         self._checkpoint_interval = checkpoint_interval
         # Cast to tuple no mater what 1-D-like input was given
         self._analysis_particle_indices = tuple(analysis_particle_indices)
@@ -174,6 +195,14 @@ class Reporter(object):
     def _storage_dict(self):
         """Return an iterable dictionary of the self._storage_X objects"""
         return {'checkpoint': self._storage_checkpoint, 'analysis': self._storage_analysis}
+
+    @property
+    def _storage_trajectory_dict(self):
+        """
+        Map of the trajectory to common name for trajectory writing
+        """
+
+        return {'checkpoint': self._trajectory_full_filenames, 'analysis': self._trajectory_solute_filenames}
 
     @property
     def analysis_particle_indices(self):
@@ -269,8 +298,8 @@ class Reporter(object):
                 primary_uuid = primary_ncfiles['analysis'].UUID
                 assert primary_uuid == sub_ncfiles['checkpoint'].UUID
             except IOError:  # Trap the "not on disk" warning
-                logger.debug('Could not locate checkpoint subfile. This is okay for certain append and read operations, '
-                             'but not for production simulation!')
+                logger.debug('Could not locate checkpoint subfile. This is okay for certain append and read operations,'
+                             ' but not for production simulation!')
             except AttributeError:
                 raise AttributeError("Checkpoint file is missing its linked primary file UUID!"
                                      "No way to ensure this checkpoint file contains data matching the analysis file!")
@@ -541,7 +570,7 @@ class Reporter(object):
 
     @mmtools.utils.with_timer('Storing sampler states')
     def write_sampler_states(self, sampler_states, iteration):
-        """Store all sampler states for a given iteration on the checkpoint file
+        """Store all sampler states for a given iteration on the checkpoint trajectory files
 
         If the iteration is not on the checkpoint interval, only the ``analysis_particle_indices`` data is written,
         if set.
@@ -1211,9 +1240,10 @@ class Reporter(object):
             If False, the write WILL occur
         """
 
-        storage = self._storage_dict[storage_file]
-        # Check if the schema must be initialized, do this regardless of the checkpoint_interval for consistency
+        storage = self._storage_filepath_dict[storage_file]
+        xtc = mdf.XTCTrajectoryFile  # This is considered low level API, so __init__ does not have it
         self._initilize_sampler_variables_on_file(storage, sampler_states[0].n_particles, len(sampler_states))
+        # Compute the location on file to seek
         if obey_checkpoint_interval:
             write_iteration = self._calculate_checkpoint_iteration(iteration)
         else:
@@ -1232,6 +1262,8 @@ class Reporter(object):
                     storage.variables['box_vectors'][write_iteration, replica_index, i, :] = vector_i
                     storage.variables['volumes'][write_iteration, replica_index] = \
                         sampler_state.volume / unit.nanometers ** 3
+                # Figure out file name
+                with xtc(self._storage_trajectory_dict[storage_file].format(replica_index), mode='w+') as traj_file:
         else:
             logger.debug("Iteration {} not on the Checkpoint Interval of {}. "
                          "Sampler State not written.".format(iteration, self._checkpoint_interval))
