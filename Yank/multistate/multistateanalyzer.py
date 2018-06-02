@@ -1403,7 +1403,7 @@ class MultiStateSamplerAnalyzer(PhaseAnalyzer):
             # Correct for potentially-changing log weights
             if has_log_weights:
                 u_n[iteration] += - np.sum(log_weights[states_slice, iteration]) + (
-                        n_replicas * logsumexp(-f_l[:] + log_weights[:, iteration]))
+                        n_replicas * logsumexp(np.array(-f_l[:] + log_weights[:, iteration])))
 
         logger.info("Done.")
         return u_n
